@@ -1,0 +1,12 @@
+agents:
+  root:
+    model: gemini-flash
+    description: "Isolated sandbox verification agent"
+    instruction: |
+      You are running inside an isolated Rootless Podman container managed by Aegis.
+      Respond concisely in 2 bullet points confirming you are online and ready to receive tasks.
+
+models:
+  gemini-flash:
+    provider: google
+    model: gemini-3.5-flash-lite

@@ -68,8 +68,14 @@ func (e *Engine) RunAgent(ctx context.Context, workspaceDir, yamlFile, prompt, a
 	}
 
 	payload := createReq{
-		Img:        "localhost/aegis-sandbox:latest",
-		Cmd:        []string{"run", filepath.Join("/workspace", yamlFile), prompt},
+		Img: "localhost/aegis-sandbox:latest",
+		Cmd: []string{
+			"run",
+			"--exec",
+			"--last",
+			filepath.Join("/workspace", yamlFile),
+			prompt,
+		},
 		Env:        []string{"GOOGLE_API_KEY=" + apiKey},
 		WorkingDir: "/workspace",
 		HostConfig: hostConfig{
@@ -111,17 +117,77 @@ func (e *Engine) RunAgent(ctx context.Context, workspaceDir, yamlFile, prompt, a
 	// 2. Start the container
 	startReq, _ := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("http://d/v4.0.0/containers/%s/start", containerID), nil)
 	startResp, err := e.httpClient.Do(startReq)
+
 	if err != nil {
 		return fmt.Errorf("start failed: %w", err)
 	}
+
+	if startResp.StatusCode != http.StatusNoContent &&
+		startResp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(startResp.Body)
+		startResp.Body.Close()
+		return fmt.Errorf(
+			"container start failed (%d): %s",
+			startResp.StatusCode,
+			string(b),
+		)
+	}
 	startResp.Body.Close()
 
+	// Wait for the agent process to finish.
+	waitURL := fmt.Sprintf(
+		"http://d/v4.0.0/containers/%s/wait?condition=not-running",
+		containerID,
+	)
+
+	waitReq, err := http.NewRequestWithContext(
+		ctx,
+		"POST",
+		waitURL,
+		nil,
+	)
+	if err != nil {
+		return err
+	}
+
+	waitResp, err := e.httpClient.Do(waitReq)
+	if err != nil {
+		return fmt.Errorf("container wait failed: %w", err)
+	}
+	defer waitResp.Body.Close()
+
+	if waitResp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(waitResp.Body)
+		return fmt.Errorf(
+			"container wait failed (%d): %s",
+			waitResp.StatusCode,
+			string(b),
+		)
+	}
+
+	var waitResult struct {
+		StatusCode int `json:"StatusCode"`
+	}
+
+	if err := json.NewDecoder(waitResp.Body).Decode(&waitResult); err != nil {
+		return fmt.Errorf("decode container exit status: %w", err)
+	}
+
+	if waitResult.StatusCode != 0 {
+		// Fetch and return logs below before reporting this error.
+	}
+
 	// 3. Stream stdout/stderr in real time
-	logURL := fmt.Sprintf("http://d/v4.0.0/containers/%s/logs?follow=true&stdout=true&stderr=true", containerID)
+	logURL := fmt.Sprintf("http://d/v4.0.0/containers/%s/logs?follow=false&stdout=true&stderr=true", containerID)
 	logReq, _ := http.NewRequestWithContext(ctx, "GET", logURL, nil)
 	logResp, err := e.httpClient.Do(logReq)
-	if err != nil {
-		return fmt.Errorf("log stream failed: %w", err)
+	if logResp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(logResp.Body)
+		return fmt.Errorf(
+			"container logs failed (%d): %s",
+			logResp.StatusCode,
+			string(b),
+		)
 	}
 	defer logResp.Body.Close()
 

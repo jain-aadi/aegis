@@ -110,7 +110,7 @@ func (e *Engine) RunAgent(ctx context.Context, workspaceDir, yamlFile, prompt, a
 
 	// destroying the ephemeral container on exit
 	defer func() {
-		delReq, _ := http.NewRequestWithContext(ctx, "DELETE", fmt.Sprintf("http://d/v4.0.0/containers/%s?force=true", containerID), nil)
+		delReq, _ := http.NewRequestWithContext(context.Background(), "DELETE", fmt.Sprintf("http://d/v4.0.0/containers/%s?force=true", containerID), nil)
 		e.httpClient.Do(delReq)
 	}()
 
@@ -175,12 +175,21 @@ func (e *Engine) RunAgent(ctx context.Context, workspaceDir, yamlFile, prompt, a
 
 	if waitResult.StatusCode != 0 {
 		// Fetch and return logs below before reporting this error.
+		return fmt.Errorf(
+			"agent exited with status %d",
+			waitResult.StatusCode,
+		)
 	}
 
 	// 3. Stream stdout/stderr in real time
 	logURL := fmt.Sprintf("http://d/v4.0.0/containers/%s/logs?follow=false&stdout=true&stderr=true", containerID)
 	logReq, _ := http.NewRequestWithContext(ctx, "GET", logURL, nil)
 	logResp, err := e.httpClient.Do(logReq)
+	if err != nil {
+		return fmt.Errorf("container logs request failed: %w", err)
+	}
+	defer logResp.Body.Close()
+
 	if logResp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(logResp.Body)
 		return fmt.Errorf(
@@ -189,8 +198,10 @@ func (e *Engine) RunAgent(ctx context.Context, workspaceDir, yamlFile, prompt, a
 			string(b),
 		)
 	}
-	defer logResp.Body.Close()
 
-	_, err = io.Copy(out, logResp.Body)
+	if _, err := io.Copy(out, logResp.Body); err != nil {
+		return fmt.Errorf("copy container logs: %w", err)
+	}
+
 	return err
 }
